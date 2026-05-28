@@ -237,16 +237,12 @@ export class PrefabTools implements ToolExecutor {
                 if (!assetInfo) {
                     throw new Error('Prefab not found');
                 }
-                
-                return Editor.Message.request('scene', 'load-asset', {
-                    uuid: assetInfo.uuid
-                });
-            }).then((prefabData: any) => {
+
+                return Editor.Message.request('scene', 'open-scene', assetInfo.uuid);
+            }).then(() => {
                 resolve({
                     success: true,
                     data: {
-                        uuid: prefabData.uuid,
-                        name: prefabData.name,
                         message: 'Prefab loaded successfully'
                     }
                 });
