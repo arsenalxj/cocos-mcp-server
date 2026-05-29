@@ -593,40 +593,39 @@ class ComponentTools {
                             throw new Error('Color value must be an object with r, g, b properties or a hexadecimal string (e.g., "#FF0000")');
                         }
                         break;
-                    case 'vec2':
-                        if (typeof value === 'object' && value !== null) {
-                            processedValue = {
-                                x: Number(value.x) || 0,
-                                y: Number(value.y) || 0
-                            };
+                    case 'vec2': {
+                        const v2 = (typeof value === 'string') ? (() => { try { return JSON.parse(value); } catch (e) { return value; } })() : value;
+                        if (typeof v2 === 'object' && v2 !== null) {
+                            processedValue = { x: Number(v2.x) || 0, y: Number(v2.y) || 0 };
                         }
                         else {
                             throw new Error('Vec2 value must be an object with x, y properties');
                         }
                         break;
-                    case 'vec3':
-                        if (typeof value === 'object' && value !== null) {
-                            processedValue = {
-                                x: Number(value.x) || 0,
-                                y: Number(value.y) || 0,
-                                z: Number(value.z) || 0
-                            };
+                    }
+                    case 'vec3': {
+                        const v3 = (typeof value === 'string') ? (() => { try { return JSON.parse(value); } catch (e) { return value; } })() : value;
+                        if (typeof v3 === 'object' && v3 !== null) {
+                            processedValue = { x: Number(v3.x) || 0, y: Number(v3.y) || 0, z: Number(v3.z) || 0 };
                         }
                         else {
                             throw new Error('Vec3 value must be an object with x, y, z properties');
                         }
                         break;
-                    case 'size':
-                        if (typeof value === 'object' && value !== null) {
+                    }
+                    case 'size': {
+                        const sizeVal = (typeof value === 'string') ? (() => { try { return JSON.parse(value); } catch (e) { return value; } })() : value;
+                        if (typeof sizeVal === 'object' && sizeVal !== null) {
                             processedValue = {
-                                width: Number(value.width) || 0,
-                                height: Number(value.height) || 0
+                                width: Number(sizeVal.width) || 0,
+                                height: Number(sizeVal.height) || 0
                             };
                         }
                         else {
                             throw new Error('Size value must be an object with width, height properties');
                         }
                         break;
+                    }
                     case 'node':
                         if (typeof value === 'string') {
                             processedValue = { uuid: value };
