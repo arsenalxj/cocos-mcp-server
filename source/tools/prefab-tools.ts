@@ -99,6 +99,29 @@ export class PrefabTools implements ToolExecutor {
                 }
             },
             {
+                name: 'link_nested_prefab_instances',
+                description: 'Convert nodes in a container prefab into proper nested prefab instances by writing cc.PrefabInstance metadata directly into the prefab JSON file. Use this after update_prefab to establish real prefab linkage so that edits to the source prefab propagate to all instances.',
+                inputSchema: {
+                    type: 'object',
+                    properties: {
+                        containerPrefabPath: {
+                            type: 'string',
+                            description: 'db:// path to the container prefab (e.g. db://assets/bundles/uno/prefab/UnoBuyin.prefab)'
+                        },
+                        sourcePrefabPath: {
+                            type: 'string',
+                            description: 'db:// path to the source prefab to link to (e.g. db://assets/bundles/uno/prefab/UnoBuyinHead.prefab)'
+                        },
+                        nodeNames: {
+                            type: 'array',
+                            items: { type: 'string' },
+                            description: 'Names of nodes inside the container prefab to convert to nested instances'
+                        }
+                    },
+                    required: ['containerPrefabPath', 'sourcePrefabPath', 'nodeNames']
+                }
+            },
+            {
                 name: 'revert_prefab',
                 description: 'Revert prefab instance to original',
                 inputSchema: {
@@ -195,6 +218,8 @@ export class PrefabTools implements ToolExecutor {
                 return await this.createPrefab(args);
             case 'update_prefab':
                 return await this.updatePrefab(args.prefabPath, args.nodeUuid);
+            case 'link_nested_prefab_instances':
+                return await this.linkNestedPrefabInstances(args);
             case 'revert_prefab':
                 return await this.revertPrefab(args.nodeUuid);
             case 'get_prefab_info':
@@ -1341,6 +1366,161 @@ export class PrefabTools implements ToolExecutor {
             }).catch((err: Error) => {
                 resolve({ success: false, error: err.message });
             });
+        });
+    }
+
+    private async linkNestedPrefabInstances(args: any): Promise<ToolResponse> {
+        return new Promise(async (resolve) => {
+            try {
+                const { containerPrefabPath, sourcePrefabPath, nodeNames } = args;
+                const fs = require('fs');
+                const path = require('path');
+
+                // Resolve real file paths via project path (avoids path.resolve mishandling db:// on Windows)
+                const projectPath = (Editor as any).Project.path;
+                const dbToFile = (dbPath: string) => path.join(projectPath, dbPath.replace(/^db:\/\//, ''));
+                const containerFilePath = dbToFile(containerPrefabPath);
+                const sourceFilePath = dbToFile(sourcePrefabPath);
+
+                // Still need asset-db for UUID only
+                const sourceInfo = await Editor.Message.request('asset-db', 'query-asset-info', sourcePrefabPath);
+                if (!sourceInfo?.uuid) throw new Error('Source prefab not found in asset-db: ' + sourcePrefabPath);
+                const sourcePrefabUuid: string = sourceInfo.uuid;
+
+                // Read both prefab JSON arrays
+                const containerData: any[] = JSON.parse(fs.readFileSync(containerFilePath, 'utf8'));
+                const sourceData: any[] = JSON.parse(fs.readFileSync(sourceFilePath, 'utf8'));
+
+                // Source prefab root PrefabInfo (instance===null, root.__id__===1)
+                const sourceRootInfo = sourceData.find((o: any) =>
+                    o && o.__type__ === 'cc.PrefabInfo' && o.instance === null &&
+                    o.root && o.root.__id__ === 1
+                );
+                if (!sourceRootInfo) throw new Error('Cannot find source prefab root PrefabInfo');
+                const sourceRootFileId: string = sourceRootInfo.fileId;
+
+                // Map: custom component __type__ -> its CompPrefabInfo.fileId in source prefab
+                const sourceCompFileIds: Record<string, string> = {};
+                for (let i = 1; i < sourceData.length; i++) {
+                    const obj = sourceData[i];
+                    if (obj && obj.__type__ === 'cc.CompPrefabInfo') {
+                        const prev = sourceData[i - 1];
+                        if (prev && prev.__type__ && !prev.__type__.startsWith('cc.') && prev.__type__ !== 'CCPropertyOverrideInfo') {
+                            sourceCompFileIds[prev.__type__] = obj.fileId;
+                        }
+                    }
+                }
+
+                // Source root node default component property values (for detecting overrides)
+                const sourceRootNode = sourceData.find((o: any) => o && o.__type__ === 'cc.Node' && o._parent === null);
+                const sourceCompDefaults: Record<string, Record<string, any>> = {};
+                if (sourceRootNode) {
+                    for (const ref of (sourceRootNode._components || [])) {
+                        const comp = sourceData[ref.__id__];
+                        if (!comp) continue;
+                        const defaults: Record<string, any> = {};
+                        for (const [k, v] of Object.entries(comp)) {
+                            if (!k.startsWith('_') && k !== '__type__' && k !== '__editorExtras__' && k !== 'node' && k !== '__prefab__') {
+                                defaults[k] = v;
+                            }
+                        }
+                        sourceCompDefaults[comp.__type__] = defaults;
+                    }
+                }
+
+                const processed: string[] = [];
+
+                for (const nodeName of nodeNames) {
+                    const nodeIdx = containerData.findIndex((o: any) =>
+                        o && o.__type__ === 'cc.Node' && o._name === nodeName
+                    );
+                    if (nodeIdx === -1) { console.warn('Node not found: ' + nodeName); continue; }
+
+                    const node = containerData[nodeIdx];
+                    const prefabInfoIdx: number = node._prefab.__id__;
+                    const newObjs: any[] = [];
+                    const overrideRefs: any[] = [];
+
+                    // TargetInfo for root node properties
+                    const rootTIIdx = containerData.length + newObjs.length;
+                    newObjs.push({ __type__: 'cc.TargetInfo', localID: [sourceRootFileId] });
+
+                    // Node-level overrides (position, rotation, scale, name, active)
+                    const nodeProps: Array<[string, any]> = [
+                        ['_name', node._name],
+                        ['_lpos', node._lpos],
+                        ['_lrot', node._lrot],
+                        ['_lscale', node._lscale],
+                        ['_euler', node._euler],
+                        ['_active', node._active],
+                    ];
+                    for (const [prop, val] of nodeProps) {
+                        if (val === undefined) continue;
+                        const oIdx = containerData.length + newObjs.length;
+                        newObjs.push({ __type__: 'CCPropertyOverrideInfo', targetInfo: { __id__: rootTIIdx }, propertyPath: [prop], value: val });
+                        overrideRefs.push({ __id__: oIdx });
+                    }
+
+                    // Component property overrides (only properties that differ from source defaults)
+                    for (const compRef of (node._components || [])) {
+                        const comp = containerData[compRef.__id__];
+                        if (!comp) continue;
+                        const compType: string = comp.__type__;
+                        const sourceDefaults = sourceCompDefaults[compType];
+                        const compFileId = sourceCompFileIds[compType];
+                        if (!sourceDefaults || !compFileId) continue;
+
+                        const compTIIdx = containerData.length + newObjs.length;
+                        newObjs.push({ __type__: 'cc.TargetInfo', localID: [compFileId] });
+
+                        for (const [prop, defaultVal] of Object.entries(sourceDefaults)) {
+                            const curVal = comp[prop];
+                            if (curVal === undefined) continue;
+                            if (JSON.stringify(curVal) !== JSON.stringify(defaultVal)) {
+                                const oIdx = containerData.length + newObjs.length;
+                                newObjs.push({ __type__: 'CCPropertyOverrideInfo', targetInfo: { __id__: compTIIdx }, propertyPath: [prop], value: curVal });
+                                overrideRefs.push({ __id__: oIdx });
+                            }
+                        }
+                    }
+
+                    // cc.PrefabInstance
+                    const instanceIdx = containerData.length + newObjs.length;
+                    newObjs.push({
+                        __type__: 'cc.PrefabInstance',
+                        fileId: this.generateFileId(),
+                        prefabRootNode: { __id__: 1 },
+                        propertyOverrides: overrideRefs,
+                        mountedComponents: [],
+                        mountedChildren: [],
+                        removedComponents: []
+                    });
+
+                    // Update PrefabInfo in-place
+                    const pi = containerData[prefabInfoIdx];
+                    pi.asset = { __uuid__: sourcePrefabUuid, __expectedType__: 'cc.Prefab' };
+                    pi.root = { __id__: nodeIdx };
+                    pi.instance = { __id__: instanceIdx };
+                    pi.fileId = sourceRootFileId;
+                    pi.targetOverrides = null;
+                    pi.nestedPrefabInstanceRoots = null;
+
+                    containerData.push(...newObjs);
+                    processed.push(nodeName);
+                }
+
+                // Write back and reimport
+                fs.writeFileSync(containerFilePath, JSON.stringify(containerData, null, 2), 'utf8');
+                await Editor.Message.request('asset-db', 'reimport-asset', containerPrefabPath);
+
+                resolve({
+                    success: true,
+                    message: `Nested prefab instances linked: ${processed.join(', ')}`,
+                    data: { processedNodes: processed, sourcePrefabUuid, sourceRootFileId }
+                });
+            } catch (err: any) {
+                resolve({ success: false, error: err.message });
+            }
         });
     }
 

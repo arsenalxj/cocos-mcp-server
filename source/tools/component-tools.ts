@@ -663,11 +663,12 @@ export class ComponentTools implements ToolExecutor {
                             throw new Error(`${propertyType} value must be a string UUID`);
                         }
                         break;
-                    case 'nodeArray':
-                        if (Array.isArray(value)) {
-                            processedValue = value.map((item: any) => {
+                    case 'nodeArray': {
+                        const arrVal = typeof value === 'string' ? JSON.parse(value) : value;
+                        if (Array.isArray(arrVal)) {
+                            processedValue = arrVal.map((item: any) => {
                                 if (typeof item === 'string') {
-                                    return { uuid: item };
+                                    return { value: { uuid: item }, type: 'cc.Node' };
                                 } else {
                                     throw new Error('NodeArray items must be string UUIDs');
                                 }
@@ -675,6 +676,7 @@ export class ComponentTools implements ToolExecutor {
                         } else {
                             throw new Error('NodeArray value must be an array');
                         }
+                    }
                         break;
                     case 'colorArray':
                         if (Array.isArray(value)) {
@@ -1020,14 +1022,15 @@ export class ComponentTools implements ToolExecutor {
                         throw error;
                     }
                 } else if (propertyType === 'nodeArray' && Array.isArray(processedValue)) {
-                    // 特殊处理节点数组 - 保持预处理的格式
+                    // 每个元素已是 {value:{uuid},type:'cc.Node'} 格式
                     console.log(`[ComponentTools] Setting node array:`, processedValue);
-                    
                     await Editor.Message.request('scene', 'set-property', {
                         uuid: nodeUuid,
                         path: propertyPath,
-                        dump: { 
-                            value: processedValue  // 保持 [{uuid: "..."}, {uuid: "..."}] 格式
+                        dump: {
+                            value: processedValue,
+                            type: 'cc.Node',
+                            isArray: true
                         }
                     });
                 } else if (propertyType === 'colorArray' && Array.isArray(processedValue)) {

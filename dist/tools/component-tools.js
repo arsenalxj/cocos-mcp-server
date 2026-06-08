@@ -671,11 +671,12 @@ class ComponentTools {
                             throw new Error(`${propertyType} value must be a string UUID`);
                         }
                         break;
-                    case 'nodeArray':
-                        if (Array.isArray(value)) {
-                            processedValue = value.map((item) => {
+                    case 'nodeArray': {
+                        const arrVal = typeof value === 'string' ? JSON.parse(value) : value;
+                        if (Array.isArray(arrVal)) {
+                            processedValue = arrVal.map((item) => {
                                 if (typeof item === 'string') {
-                                    return { uuid: item };
+                                    return { value: { uuid: item }, type: 'cc.Node' };
                                 }
                                 else {
                                     throw new Error('NodeArray items must be string UUIDs');
@@ -686,6 +687,7 @@ class ComponentTools {
                             throw new Error('NodeArray value must be an array');
                         }
                         break;
+                    }
                     case 'colorArray':
                         if (Array.isArray(value)) {
                             processedValue = value.map((item) => {
@@ -1014,13 +1016,15 @@ class ComponentTools {
                     }
                 }
                 else if (propertyType === 'nodeArray' && Array.isArray(processedValue)) {
-                    // 特殊处理节点数组 - 保持预处理的格式
+                    // 特殊处理节点数组 - 每个元素已是 {value:{uuid},type:'cc.Node'} 格式
                     console.log(`[ComponentTools] Setting node array:`, processedValue);
                     await Editor.Message.request('scene', 'set-property', {
                         uuid: nodeUuid,
                         path: propertyPath,
                         dump: {
-                            value: processedValue // 保持 [{uuid: "..."}, {uuid: "..."}] 格式
+                            value: processedValue,
+                            type: 'cc.Node',
+                            isArray: true
                         }
                     });
                 }
